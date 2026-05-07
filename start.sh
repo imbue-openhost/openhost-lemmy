@@ -35,14 +35,19 @@ APP_NAME="${OPENHOST_APP_NAME:-lemmy}"
 APP_HOST="${APP_NAME}.${ZONE_DOMAIN}"
 
 PG_DATA="$PERSIST/postgres"
-PG_LOG="$PERSIST/postgres.log"
+PG_LOG_DIR="$PERSIST/log"
+PG_LOG="$PG_LOG_DIR/postgres.log"
 LEMMY_CONFIG="$PERSIST/config.hjson"
 ADMIN_PASSWORD_FILE="$PERSIST/admin-password.txt"
 PG_PASSWORD_FILE="$PERSIST/postgres-password.txt"
 OIDC_CLIENT_SECRET_FILE="$PERSIST/oidc-client-secret.txt"
 
-mkdir -p "$PERSIST"
-chown -R lemmy:lemmy "$PERSIST"
+# Lay out persistent dirs with correct ownership.  Postgres
+# specifically needs its data dir + log dir owned by the postgres
+# user; the rest can be owned by lemmy.
+mkdir -p "$PERSIST" "$PG_LOG_DIR"
+chown postgres:postgres "$PG_LOG_DIR"
+chmod 0750 "$PG_LOG_DIR"
 
 # -----------------------------------------------------------------
 # Postgres bootstrap
@@ -122,6 +127,15 @@ OIDC_CLIENT_ID="openhost-lemmy"
 # -----------------------------------------------------------------
 # Render Lemmy config
 # -----------------------------------------------------------------
+
+# Lemmy + lemmy-ui run as the lemmy user.  Make sure the rest of
+# $PERSIST (excluding postgres dirs) is readable by them.  We do
+# this only on dirs lemmy will read/write so we don't fight the
+# postgres user's exclusive ownership of $PG_DATA / $PG_LOG_DIR.
+chown lemmy:lemmy "$PERSIST"
+for d in "$PERSIST"/oidc; do
+    [[ -e "$d" ]] && chown -R lemmy:lemmy "$d"
+done
 
 # Always re-render so config-template changes after upgrades take
 # effect.  Lemmy reads this on startup.
