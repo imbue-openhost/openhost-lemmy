@@ -50,6 +50,15 @@ CLIENT_ID = os.environ["OIDC_CLIENT_ID"]
 # instance with multiple providers you'd need to change this or
 # generalise the bouncer.
 LEMMY_OAUTH_PROVIDER_ID = int(os.environ.get("LEMMY_OAUTH_PROVIDER_ID", "1"))
+# Username the synthetic SSO user takes on first sign-in.  Must
+# match what bootstrap.py promotes to admin (its SSO_USERNAME env
+# var); we coordinate via the same env var name so an operator who
+# changes one updates both.  Cannot collide with the provisioning
+# admin (``owner``) — Lemmy rejects an OAuth registration whose
+# username is already taken.  See bootstrap.py for the fuller
+# rationale on why we use a separate user instead of linking to
+# ``owner``.
+SSO_USERNAME = os.environ.get("SSO_USERNAME", "openhost")
 
 
 def _is_owner(request: Request) -> bool:
@@ -136,12 +145,22 @@ async def bounce(request: Request) -> Response:
   </div>
   <script>
   (function() {{
+    // Pre-fill the localStorage shape that lemmy-ui's OAuthCallback
+    // component reads on the redirect-back leg.  ``username`` is
+    // the dedicated SSO user we mint on first sign-in (see
+    // bootstrap.py for why it's separate from the provisioning
+    // admin user).  ``answer`` is left blank — Lemmy's
+    // application-question gate is bypassed on this instance via
+    // registration_mode=open (also set by bootstrap.py); on a
+    // hypothetical operator override that re-enables
+    // require_application, this would need to carry an actual
+    // free-form answer.
     var oauthState = {{
       state: {state!r},
       oauth_provider_id: {LEMMY_OAUTH_PROVIDER_ID},
       redirect_uri: {redirect_uri!r},
       prev: {prev!r},
-      username: undefined,
+      username: {SSO_USERNAME!r},
       answer: undefined,
       show_nsfw: undefined,
       expires_at: {expires_at}
