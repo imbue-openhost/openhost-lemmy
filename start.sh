@@ -158,6 +158,41 @@ RUST_LOG=warn \
 gosu lemmy /usr/local/bin/lemmy_server &
 LEMMY_PID=$!
 
+# Wait for lemmy_server to finish migrations + bind its port
+# BEFORE we start anything else.  First-boot migrations on a fresh
+# Postgres can take 30+s; killing postgres or lemmy mid-migration
+# leaves a half-applied schema that's hard to recover from.  Poll
+# /api/v3/site (anonymous, lightweight) until ready.
+echo "[start.sh] Waiting for lemmy_server migrations + readiness..."
+LEMMY_READY=0
+for i in $(seq 1 180); do
+    if python3 -c "
+import sys, urllib.request
+try:
+    r = urllib.request.urlopen('http://127.0.0.1:8536/api/v3/site', timeout=3)
+    sys.exit(0 if r.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        LEMMY_READY=1
+        echo "[start.sh] lemmy_server ready after ${i}s"
+        break
+    fi
+    if ! kill -0 "$LEMMY_PID" 2>/dev/null; then
+        wait "$LEMMY_PID" || true
+        echo "[start.sh] lemmy_server exited before becoming ready"
+        gosu postgres "$PG_BIN/pg_ctl" -D "$PG_DATA" stop -m fast || true
+        exit 1
+    fi
+    sleep 1
+done
+if [[ "$LEMMY_READY" != "1" ]]; then
+    echo "[start.sh] lemmy_server did not become ready within 180s; aborting"
+    kill -TERM "$LEMMY_PID" 2>/dev/null || true
+    gosu postgres "$PG_BIN/pg_ctl" -D "$PG_DATA" stop -m fast || true
+    exit 1
+fi
+
 # -----------------------------------------------------------------
 # Start lemmy-ui
 # -----------------------------------------------------------------

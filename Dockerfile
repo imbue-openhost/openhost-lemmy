@@ -70,14 +70,22 @@ RUN apt-get update -qq \
         python3-jwt \
         python3-cryptography \
         python3-uvicorn \
-        nodejs \
         curl \
         tini \
         gosu \
         ca-certificates \
         procps \
+        gnupg \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/nginx/sites-enabled/default
+
+# Node.js 20 from NodeSource — Debian Bookworm's apt repo only has
+# Node 18, but lemmy-ui's bundled JS uses syntax/APIs that require
+# Node 20+ (we saw the upstream lemmy-ui:1.0-alpha.18 boot crash on
+# Node 18 with a parse error in dist/js/server.js).
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
 
 # lemmy_server binary (statically-linked Rust, debian-bookworm
 # build).  Drop into /usr/local/bin where it'll be on PATH.
