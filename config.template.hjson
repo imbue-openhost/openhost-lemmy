@@ -16,8 +16,4 @@
   federation: {
     concurrent_sends_per_instance: 1
   }
-  email: {
-    smtp_login: ""
-    smtp_password: ""
-  }
 }
