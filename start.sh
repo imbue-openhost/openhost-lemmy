@@ -203,13 +203,18 @@ fi
 # -----------------------------------------------------------------
 
 echo "[start.sh] Starting lemmy-ui on 127.0.0.1:1234"
-LEMMY_UI_LEMMY_INTERNAL_HOST="127.0.0.1:8536" \
-LEMMY_UI_LEMMY_EXTERNAL_HOST="$APP_HOST" \
-LEMMY_UI_HTTPS=true \
-LEMMY_UI_HOST="127.0.0.1:1234" \
-LEMMY_UI_DEBUG=false \
-NODE_ENV=production \
-gosu lemmy /usr/bin/node /opt/lemmy-ui/dist/js/server.js &
+# lemmy-ui's server.js opens dist/js/embedded.js relative to CWD,
+# so we cd into /opt/lemmy-ui first.
+(
+    cd /opt/lemmy-ui
+    LEMMY_UI_LEMMY_INTERNAL_HOST="127.0.0.1:8536" \
+    LEMMY_UI_LEMMY_EXTERNAL_HOST="$APP_HOST" \
+    LEMMY_UI_HTTPS=true \
+    LEMMY_UI_HOST="127.0.0.1:1234" \
+    LEMMY_UI_DEBUG=false \
+    NODE_ENV=production \
+    exec gosu lemmy /usr/bin/node /opt/lemmy-ui/dist/js/server.js
+) &
 UI_PID=$!
 
 # -----------------------------------------------------------------

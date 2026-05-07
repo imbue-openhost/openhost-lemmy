@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
-LEMMY_API = os.environ.get("LEMMY_API_URL", "http://127.0.0.1:8536/api/v3").rstrip("/")
+LEMMY_API = os.environ.get("LEMMY_API_URL", "http://127.0.0.1:8536/api/v4").rstrip("/")
 LEMMY_HOSTNAME = os.environ["LEMMY_HOSTNAME"]
 ADMIN_USERNAME = os.environ.get("LEMMY_ADMIN_USERNAME", "owner")
 ADMIN_PASSWORD = os.environ["LEMMY_ADMIN_PASSWORD"]
