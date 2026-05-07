@@ -228,13 +228,19 @@ echo "[start.sh] Starting lemmy-ui on 127.0.0.1:1234"
 # can't fail-soft like the other routes).  See
 # https://github.com/LemmyNet/lemmy-ui/blob/1.0.0-alpha.18/src/shared/utils/env.ts#L28
 # for the protocol-prefix logic.
+# Both the v1.x env-var pair (LEMMY_UI_BACKEND_INTERNAL /
+# LEMMY_UI_BACKEND, canonical for v1.0.0-alpha+) and the legacy
+# 0.19.x env-var pair (LEMMY_UI_LEMMY_INTERNAL_HOST /
+# LEMMY_UI_LEMMY_EXTERNAL_HOST) are listed below — the active
+# image only consumes the v1.x pair, the legacy names are kept
+# in case a future image bump regresses to the older naming.
+# Inline comments interspersed with `\` continuations would
+# silently truncate the env-var chain in bash, so all comments
+# stay outside the prefix block.
 (
     cd /opt/lemmy-ui
-    # v1.x env vars (canonical for v1.0.0-alpha+):
     LEMMY_UI_BACKEND_INTERNAL="http://127.0.0.1:8536" \
     LEMMY_UI_BACKEND="https://$APP_HOST" \
-    # Legacy 0.19.x env vars; harmless for v1 but kept for
-    # operator-image-version flexibility.
     LEMMY_UI_LEMMY_INTERNAL_HOST="127.0.0.1:8536" \
     LEMMY_UI_LEMMY_EXTERNAL_HOST="$APP_HOST" \
     LEMMY_UI_HTTPS=true \
