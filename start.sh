@@ -256,10 +256,25 @@ UI_PID=$!
 # -----------------------------------------------------------------
 
 OIDC_PUBLIC_BASE="https://$APP_HOST"
+# OIDC_LOOPBACK_BASE is the URL the Lemmy backend uses when it
+# server-to-server-calls the OIDC bridge (token exchange,
+# userinfo).  Routing those server hops via the public hostname
+# would hit Hetzner / EC2 / GCP NAT-loopback restrictions
+# ("connect: connection refused" when a host tries to reach its
+# own public IP), so we keep them on loopback.  See bootstrap.py
+# `_provider_payload` for the full reasoning.
+OIDC_LOOPBACK_BASE="http://127.0.0.1:7000"
+# SSO_USERNAME is the Lemmy username the synthetic OpenHost-SSO
+# user takes on first sign-in.  Both bootstrap.py (admin
+# promotion) and sso_bounce.py (localStorage prefill) read this
+# env var — change it in one place and both pick it up.
+SSO_USERNAME="${SSO_USERNAME:-openhost}"
 export OIDC_PUBLIC_BASE
+export OIDC_LOOPBACK_BASE
 export OIDC_CLIENT_ID
 export OIDC_CLIENT_SECRET
 export OIDC_DATA_DIR="$PERSIST/oidc"
+export SSO_USERNAME
 mkdir -p "$OIDC_DATA_DIR"
 chown -R lemmy:lemmy "$OIDC_DATA_DIR"
 
@@ -272,6 +287,7 @@ BRIDGE_PID=$!
 
 echo "[start.sh] Starting SSO bouncer on 127.0.0.1:7100"
 LEMMY_OAUTH_PROVIDER_ID=1 \
+SSO_USERNAME="$SSO_USERNAME" \
 gosu lemmy python3 -m uvicorn --host 127.0.0.1 --port 7100 --log-level warning --app-dir /opt/openhost-lemmy sso_bounce:app &
 BOUNCE_PID=$!
 
@@ -288,14 +304,22 @@ NGINX_PID=$!
 # -----------------------------------------------------------------
 
 # Run in the background so it doesn't block container startup.  If
-# the provider is already registered (subsequent boots), it's a
-# fast no-op.
+# the provider is already registered with the right endpoints
+# (subsequent boots), it's a fast no-op.  bootstrap.py also takes
+# care of:
+#   * keeping the registration_mode set to ``open`` (so the OIDC
+#     user-creation path doesn't trip on the application-question gate)
+#   * promoting the SSO_USERNAME user to admin once it exists (it's
+#     created lazily on the first SSO sign-in, so this is a no-op
+#     until then).
 (
     LEMMY_HOSTNAME="$APP_HOST" \
     LEMMY_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
     OIDC_CLIENT_ID="$OIDC_CLIENT_ID" \
     OIDC_CLIENT_SECRET="$OIDC_CLIENT_SECRET" \
     OIDC_PUBLIC_BASE="$OIDC_PUBLIC_BASE" \
+    OIDC_LOOPBACK_BASE="$OIDC_LOOPBACK_BASE" \
+    SSO_USERNAME="$SSO_USERNAME" \
     python3 /opt/openhost-lemmy/bootstrap.py 2>&1 \
     | sed 's/^/[bootstrap] /'
 ) &
