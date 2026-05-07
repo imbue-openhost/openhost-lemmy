@@ -1,0 +1,71 @@
+[app]
+name = "lemmy"
+version = "0.1.0"
+description = "Lemmy federated link-aggregator (fediverse Reddit) packaged for OpenHost, with an OIDC bridge so the zone owner is auto-logged-in via OpenHost SSO without ever seeing Lemmy's native login page."
+authors = ["Andrew Laack <andrew@laack.co>"]
+
+[runtime.container]
+image = "Dockerfile"
+# nginx fronts everything on :8080.  Internal services:
+#   * Lemmy backend (Rust) on 127.0.0.1:8536
+#   * lemmy-ui (Node SSR) on 127.0.0.1:1234
+#   * pict-rs (image hosting) on 127.0.0.1:8338
+#   * Postgres on 127.0.0.1:5432 (loopback only)
+#   * OIDC bridge (Python) on 127.0.0.1:7000
+port = 8080
+
+[routing]
+health_check = "/api/v3/site"
+# Federation requires anonymous access to the bulk of Lemmy's
+# surface — remote ActivityPub servers don't carry zone_auth
+# cookies and must reach our Inbox / WebFinger / NodeInfo / API
+# without a 302 to /login.  We also keep /_oidc/{discovery,jwks,
+# token,userinfo} public so Lemmy's backend can fetch them
+# server-side (it runs in the same container but accesses these
+# via the public URL).  /_oidc/authorize is INTENTIONALLY NOT
+# public — the OpenHost router must stamp X-OpenHost-Is-Owner on
+# it, otherwise the bridge can't identify the owner.
+public_paths = [
+    "/_oidc/.well-known/openid-configuration",
+    "/_oidc/jwks",
+    "/_oidc/token",
+    "/_oidc/userinfo",
+    "/.well-known/",
+    "/nodeinfo/",
+    "/api/v3/",
+    "/api/v4/",
+    "/feeds/",
+    "/pictrs/",
+    "/static/",
+    "/css/",
+    "/assets/",
+    "/inbox",
+    "/u/",
+    "/c/",
+    "/post/",
+    "/comment/",
+    "/instances",
+    "/oauth/callback",
+]
+
+[resources]
+# Postgres + Lemmy backend (Rust) + lemmy-ui (Node SSR) +
+# pict-rs.  2 GiB is comfortable for a single-user / small
+# instance; bump for larger.
+memory_mb = 2048
+cpu_millicores = 1500
+
+[data]
+# Persistent state under /data/app_data/lemmy/:
+#   * postgres/         — the Postgres data dir
+#   * pictrs/           — pict-rs's content-addressed image store
+#   * config.hjson      — Lemmy's main config (rendered from a
+#                         template on first boot; references the
+#                         persisted JWT secret + admin password)
+#   * admin-password.txt — initial admin password used by the
+#                         OIDC-provider-registration step on first
+#                         boot.  Operator can also use this to log
+#                         in directly if SSO ever breaks.
+#   * oidc/             — OIDC bridge's signing key + bridge config
+app_data = true
+app_temp_data = true

@@ -1,0 +1,23 @@
+{
+  database: {
+    connection: "postgres://lemmy:__POSTGRES_PASSWORD__@localhost:5432/lemmy"
+    pool_size: 10
+  }
+  hostname: "__HOSTNAME__"
+  bind: "127.0.0.1"
+  port: 8536
+  tls_enabled: true
+  setup: {
+    admin_username: "owner"
+    admin_password: "__ADMIN_PASSWORD__"
+    site_name: "OpenHost Lemmy"
+    admin_email: "owner@__HOSTNAME__"
+  }
+  federation: {
+    concurrent_sends_per_instance: 1
+  }
+  email: {
+    smtp_login: ""
+    smtp_password: ""
+  }
+}
