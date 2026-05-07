@@ -302,13 +302,14 @@ def _ensure_open_registration(jwt_token: str, local_site: dict) -> None:
 
 def _find_person_id(jwt_token: str, username: str) -> int | None:
     """Look up a local person's id by username.  Returns None if no
-    such user exists yet."""
-    # ``/user`` is the documented per-user fetch endpoint on Lemmy
-    # 1.0+.  We pass the bare username; Lemmy resolves it to a local
-    # person.  If the user doesn't exist we get back a 400 with
-    # ``not_found``-flavoured cause; treat any non-200 as "not yet".
+    such user exists yet.
+
+    Lemmy 1.0 exposes this as ``GET /api/v4/person?username=<name>``.
+    The 0.19.x naming was ``GET /api/v3/user?username=...`` — the
+    rename to ``person`` shipped with the 1.0-alpha API surface.
+    """
     status, payload = _request(
-        "GET", f"/user?username={username}", auth=jwt_token
+        "GET", f"/person?username={username}", auth=jwt_token
     )
     if status != 200:
         return None
