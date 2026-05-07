@@ -81,7 +81,7 @@ def _login() -> str:
     print("[bootstrap] logging in as admin")
     status, payload = _request(
         "POST",
-        "/user/login",
+        "/account/auth/login",
         {"username_or_email": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
     )
     if status != 200 or "jwt" not in payload:
