@@ -89,11 +89,16 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
 done
 
-# Idempotent: create role + DB if absent.
+# Idempotent: create role + DB if absent.  Lemmy 1.0-alpha
+# migrations DROP/recreate system triggers (RI_ConstraintTrigger_*),
+# which requires SUPERUSER.  Fine for a single-tenant local DB
+# where the lemmy app is the only thing using Postgres.
 PG_ROLE_EXISTS="$(gosu postgres "$PG_BIN/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname='lemmy'" || true)"
 if [[ "$PG_ROLE_EXISTS" != "1" ]]; then
     echo "[start.sh] Creating lemmy DB role"
-    gosu postgres "$PG_BIN/psql" -c "CREATE ROLE lemmy LOGIN PASSWORD '$PG_PASSWORD';"
+    gosu postgres "$PG_BIN/psql" -c "CREATE ROLE lemmy LOGIN SUPERUSER PASSWORD '$PG_PASSWORD';"
+else
+    gosu postgres "$PG_BIN/psql" -c "ALTER ROLE lemmy WITH SUPERUSER;" >/dev/null
 fi
 PG_DB_EXISTS="$(gosu postgres "$PG_BIN/psql" -tAc "SELECT 1 FROM pg_database WHERE datname='lemmy'" || true)"
 if [[ "$PG_DB_EXISTS" != "1" ]]; then
