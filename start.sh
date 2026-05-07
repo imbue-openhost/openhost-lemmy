@@ -186,12 +186,14 @@ chown -R lemmy:lemmy "$OIDC_DATA_DIR"
 
 echo "[start.sh] Starting OIDC bridge on 127.0.0.1:7000"
 cd /opt/openhost-lemmy
-gosu lemmy uvicorn --host 127.0.0.1 --port 7000 --log-level warning oidc_bridge:app &
+# python3-uvicorn (Debian's apt package) ships the library but
+# not a /usr/bin/uvicorn script — invoke via `python3 -m uvicorn`.
+gosu lemmy python3 -m uvicorn --host 127.0.0.1 --port 7000 --log-level warning --app-dir /opt/openhost-lemmy oidc_bridge:app &
 BRIDGE_PID=$!
 
 echo "[start.sh] Starting SSO bouncer on 127.0.0.1:7100"
 LEMMY_OAUTH_PROVIDER_ID=1 \
-gosu lemmy uvicorn --host 127.0.0.1 --port 7100 --log-level warning sso_bounce:app &
+gosu lemmy python3 -m uvicorn --host 127.0.0.1 --port 7100 --log-level warning --app-dir /opt/openhost-lemmy sso_bounce:app &
 BOUNCE_PID=$!
 
 # -----------------------------------------------------------------
