@@ -169,7 +169,7 @@ LEMMY_UI_HTTPS=true \
 LEMMY_UI_HOST="127.0.0.1:1234" \
 LEMMY_UI_DEBUG=false \
 NODE_ENV=production \
-gosu lemmy /usr/local/bin/node /opt/lemmy-ui/dist/js/server.js &
+gosu lemmy /usr/bin/node /opt/lemmy-ui/dist/js/server.js &
 UI_PID=$!
 
 # -----------------------------------------------------------------

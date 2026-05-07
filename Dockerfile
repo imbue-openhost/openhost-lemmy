@@ -66,6 +66,7 @@ RUN apt-get update -qq \
         python3-jwt \
         python3-cryptography \
         python3-uvicorn \
+        nodejs \
         curl \
         tini \
         gosu \
@@ -78,12 +79,11 @@ RUN apt-get update -qq \
 # build).  Drop into /usr/local/bin where it'll be on PATH.
 COPY --from=backend-source /usr/local/bin/lemmy_server /usr/local/bin/lemmy_server
 
-# lemmy-ui: copy node + the compiled JS bundle.  Upstream installs
-# under /app, image's user is `node` (uid 1000).  We don't need
-# their User= directive; we'll launch as a non-root user from
-# start.sh via gosu.
-COPY --from=ui-source /usr/local/bin/node /usr/local/bin/node
-COPY --from=ui-source /usr/local/bin/docker-entrypoint.sh /usr/local/bin/lemmy-ui-entrypoint.sh
+# lemmy-ui: copy the compiled JS bundle.  We DON'T copy the
+# upstream node binary — that image is Alpine (musl libc) and
+# our base is Debian (glibc); a musl-linked binary fails to
+# load with `libc.musl-x86_64.so.1: not found`.  Use Debian's
+# nodejs apt package instead (installed above).
 COPY --from=ui-source /app /opt/lemmy-ui
 
 # Create the lemmy unprivileged user; UID 1500 to avoid clashing
