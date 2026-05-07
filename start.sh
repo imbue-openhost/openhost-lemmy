@@ -205,8 +205,36 @@ fi
 echo "[start.sh] Starting lemmy-ui on 127.0.0.1:1234"
 # lemmy-ui's server.js opens dist/js/embedded.js relative to CWD,
 # so we cd into /opt/lemmy-ui first.
+#
+# Env vars: lemmy-ui v1.x uses LEMMY_UI_BACKEND_INTERNAL (loopback
+# URL the SSR uses to talk to lemmy_server) and LEMMY_UI_BACKEND
+# (the public URL the SPA emits in browser-side code).  Earlier
+# versions used LEMMY_UI_LEMMY_INTERNAL_HOST / LEMMY_UI_LEMMY_EXTERNAL_HOST
+# which the v1 server.js ignores entirely — those names are gone
+# from src/shared/utils/env.ts and silently fall back to the
+# baked-in testHost = "localhost:8536".
+#
+# We set BOTH env-var names so this start.sh keeps working if a
+# future image happens to be a backport to 0.19.x; the
+# v1.0-alpha+ image reads only the BACKEND_* pair.
+#
+# Crucially we INCLUDE the http:// scheme in
+# LEMMY_UI_BACKEND_INTERNAL.  Without it, lemmy-ui's getBaseUrl
+# applies LEMMY_UI_HTTPS=true and tries to TLS-handshake against
+# the loopback address — but lemmy_server speaks plain HTTP, so
+# every SSR backend call dies on the handshake and actix logs
+# "invalid Header provided" while the SPA shows a 500 error
+# page (which is what an /oauth/callback render hits because it
+# can't fail-soft like the other routes).  See
+# https://github.com/LemmyNet/lemmy-ui/blob/1.0.0-alpha.18/src/shared/utils/env.ts#L28
+# for the protocol-prefix logic.
 (
     cd /opt/lemmy-ui
+    # v1.x env vars (canonical for v1.0.0-alpha+):
+    LEMMY_UI_BACKEND_INTERNAL="http://127.0.0.1:8536" \
+    LEMMY_UI_BACKEND="https://$APP_HOST" \
+    # Legacy 0.19.x env vars; harmless for v1 but kept for
+    # operator-image-version flexibility.
     LEMMY_UI_LEMMY_INTERNAL_HOST="127.0.0.1:8536" \
     LEMMY_UI_LEMMY_EXTERNAL_HOST="$APP_HOST" \
     LEMMY_UI_HTTPS=true \
