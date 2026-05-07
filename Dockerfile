@@ -62,8 +62,6 @@ ARG DEBIAN_FRONTEND=noninteractive
 #     in below — saves an apt install of nodejs.
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends \
-        postgresql-15 \
-        postgresql-client-15 \
         nginx \
         python3 \
         python3-starlette \
@@ -78,6 +76,20 @@ RUN apt-get update -qq \
         gnupg \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/nginx/sites-enabled/default
+
+# PostgreSQL 16 from pgdg.postgresql.org.  Debian Bookworm's apt
+# repo has only PG 15; Lemmy 1.0-alpha's migrations include
+# Postgres-16-only SQL (lateral subqueries with required aliases)
+# and outright fail on PG 15.
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg \
+ && echo "deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update -qq \
+ && apt-get install -y --no-install-recommends \
+        postgresql-16 \
+        postgresql-client-16 \
+ && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 from NodeSource — Debian Bookworm's apt repo only has
 # Node 18, but lemmy-ui's bundled JS uses syntax/APIs that require

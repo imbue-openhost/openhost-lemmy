@@ -53,7 +53,7 @@ chmod 0750 "$PG_LOG_DIR"
 # Postgres bootstrap
 # -----------------------------------------------------------------
 
-PG_BIN="/usr/lib/postgresql/15/bin"
+PG_BIN="/usr/lib/postgresql/16/bin"
 
 if [[ ! -f "$PG_PASSWORD_FILE" ]]; then
     echo "[start.sh] Generating new Postgres password"
