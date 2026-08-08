@@ -9,9 +9,10 @@ image = "Dockerfile"
 # nginx fronts everything on :8080.  Internal services:
 #   * Lemmy backend (Rust) on 127.0.0.1:8536
 #   * lemmy-ui (Node SSR) on 127.0.0.1:1234
-#   * pict-rs (image hosting) on 127.0.0.1:8338
-#   * Postgres on 127.0.0.1:5432 (loopback only)
+#   * Postgres 16 on 127.0.0.1:5432 (loopback only)
 #   * OIDC bridge (Python) on 127.0.0.1:7000
+#   * SSO bouncer (Python) on 127.0.0.1:7100
+# (pict-rs / image hosting is NOT bundled — see README.)
 port = 8080
 
 [routing]
@@ -64,23 +65,27 @@ public_paths = [
 ]
 
 [resources]
-# Postgres + Lemmy backend (Rust) + lemmy-ui (Node SSR) +
-# pict-rs.  2 GiB is comfortable for a single-user / small
+# Postgres 16 + Lemmy backend (Rust) + lemmy-ui (Node SSR) +
+# OIDC bridge.  2 GiB is comfortable for a single-user / small
 # instance; bump for larger.
 memory_mb = 2048
 cpu_millicores = 1500
 
 [data]
 # Persistent state under /data/app_data/lemmy/:
-#   * postgres/         — the Postgres data dir
-#   * pictrs/           — pict-rs's content-addressed image store
-#   * config.hjson      — Lemmy's main config (rendered from a
-#                         template on first boot; references the
-#                         persisted JWT secret + admin password)
-#   * admin-password.txt — initial admin password used by the
-#                         OIDC-provider-registration step on first
-#                         boot.  Operator can also use this to log
-#                         in directly if SSO ever breaks.
-#   * oidc/             — OIDC bridge's signing key + bridge config
+#   * postgres/               — the Postgres data dir
+#   * postgres-password.txt   — the DB role password (not a user
+#                               credential; DB binds loopback-only)
+#   * oidc-client-secret.txt  — OIDC client secret shared between
+#                               Lemmy and the in-container bridge
+#                               (not a user credential)
+#   * oidc/signing-key.pem    — OIDC bridge's RSA signing key
+#
+# Deliberately NOT under app_data (so file-browser can't read a
+# usable credential): the Lemmy admin (web-login) password — minted
+# in-memory each boot and re-stamped into the DB by bootstrap.py —
+# and the rendered config.hjson (which embeds cleartext passwords),
+# which lives at /run/lemmy/config.hjson (container-local, re-rendered
+# every boot).  See start.sh + README "Persistent files".
 app_data = true
 app_temp_data = true

@@ -134,7 +134,7 @@ This does not weaken SSO. The OpenHost router still verifies the owner's `zone_a
 
 - **No pict-rs.** Image hosting (avatars, post thumbnails, federated remote media) is not bundled. Lemmy works without it (image features just become no-ops); add a `[[ports]]`-published pict-rs alongside if you want it.
 - **Single owner.** This deployment is single-tenant by design. The OIDC bridge always claims `sub: owner@<zone>`, so every SSO sign-in lands as the same `openhost` user. Federated remote users (signing up from other instances and following your communities) are handled normally; this only constrains who-can-be-an-admin-on-this-instance.
-- **No outbound email.** Account confirmations and password-reset are disabled (you can't lose your password — it's in the credentials file).
+- **No outbound email.** Account confirmations and password-reset are disabled. This is fine for the single-tenant owner because normal access is via OpenHost SSO (no password needed); the break-glass `owner` password is minted in-memory each boot rather than stored, so there's nothing to "reset".
 - **PKCE supported** on the OIDC flow (per Lemmy 0.19.10+'s requirement) but the `state` validation is left to lemmy-ui's localStorage check. If lemmy-ui's `oauth_state` schema changes, the bouncer's inline JS would need updating to match.
 - **Bundled Postgres**, not an external one. Postgres 16 (from the pgdg apt repo — Lemmy 1.0-alpha's migrations use Postgres-16-only SQL) runs in the same container; data lives under `$OPENHOST_APP_DATA_DIR/postgres/`. Backups via OpenHost's `openhost-backup` app capture this directory verbatim.
 

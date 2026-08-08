@@ -4,9 +4,11 @@
 Runs on every container start; idempotent.  Tasks (in order):
 
   1. Wait for Lemmy to come up.
-  2. Log in as the provisioning admin (``owner``) using the password
-     persisted in ``admin-password.txt`` so we have a JWT for the
-     subsequent admin-only API calls.
+  2. Re-stamp the provisioning admin (``owner``) password in the DB to
+     the ephemeral in-memory ``LEMMY_ADMIN_PASSWORD`` (start.sh mints a
+     fresh one each boot and never writes it to disk), then log in as
+     ``owner`` with it so we have a JWT for the subsequent admin-only
+     API calls.  See ``_reset_admin_password_in_db`` for why.
   3. Register (or, on subsequent boots, *reconcile*) the OIDC
      ``oauth_provider`` row.  We always re-PUT the endpoints because
      the design changed mid-life: token_endpoint and userinfo_endpoint
