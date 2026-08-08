@@ -158,9 +158,15 @@ def _reset_admin_password_in_db() -> None:
     ).decode("ascii")
 
     # Update only the local_user row belonging to the ``owner``
-    # person.  Parameterise via psql variables so the password hash
-    # (which can't contain quotes anyway, but defence in depth) and
-    # username are passed safely, never string-interpolated into SQL.
+    # person.  We pass the hash + username as psql variables and
+    # reference them with the :'var' quoting form so they're never
+    # string-interpolated into the SQL text (defence in depth even
+    # though a bcrypt hash contains no quotes).
+    #
+    # IMPORTANT: psql only performs :'var' interpolation for SQL it
+    # reads from stdin or a -f file, NOT for a query passed via -c /
+    # --command.  So we feed the statement on stdin.  ON_ERROR_STOP
+    # makes a failed UPDATE return a non-zero exit code.
     sql = (
         "UPDATE local_user SET password_encrypted = :'hash' "
         "WHERE person_id = (SELECT id FROM person "
@@ -172,11 +178,12 @@ def _reset_admin_password_in_db() -> None:
         "-v", "ON_ERROR_STOP=1",
         "-v", f"hash={hashed}",
         "-v", f"uname={ADMIN_USERNAME}",
-        "-tAc", sql,
+        "-tA",
     ]
     try:
         result = subprocess.run(
             cmd,
+            input=sql,
             capture_output=True,
             text=True,
             timeout=30,
