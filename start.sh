@@ -139,10 +139,14 @@ gosu postgres "$PG_BIN/psql" -c "ALTER ROLE lemmy WITH PASSWORD '$PG_PASSWORD';"
 # container start and nothing usable ever lands in $PERSIST.
 #
 # The owner account is a break-glass admin anyway — normal use is
-# the SSO-minted `openhost` admin.  If an operator needs to log in
-# as `owner` directly they can read this value from the container's
-# start.sh environment (podman exec) at runtime, or just rely on
-# SSO.
+# the SSO-minted `openhost` admin.  This value lives ONLY in this
+# start.sh process's memory (it is deliberately not `export`ed, so
+# it never appears in child-process environments or `podman exec …
+# printenv`), which is why bootstrap.py receives it explicitly via
+# the env-prefix on its invocation below.  There is therefore no
+# stored owner password to recover — day-to-day access is via SSO.
+# To log in as `owner` directly, set a password yourself in the DB
+# (see README "How auth works").
 echo "[start.sh] Minting ephemeral Lemmy admin password (in-memory only)"
 ADMIN_PASSWORD="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)"
 
