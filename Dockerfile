@@ -67,6 +67,7 @@ RUN apt-get update -qq \
         python3-starlette \
         python3-jwt \
         python3-cryptography \
+        python3-bcrypt \
         python3-uvicorn \
         curl \
         tini \

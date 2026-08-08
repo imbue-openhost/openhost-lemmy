@@ -16,16 +16,31 @@ port = 8080
 
 [routing]
 health_check = "/api/v3/site"
-# Federation requires anonymous access to the bulk of Lemmy's
-# surface — remote ActivityPub servers don't carry zone_auth
-# cookies and must reach our Inbox / WebFinger / NodeInfo / API
-# without a 302 to /login.  We also keep /_oidc/{discovery,jwks,
-# token,userinfo} public so Lemmy's backend can fetch them
-# server-side (it runs in the same container but accesses these
-# via the public URL).  /_oidc/authorize is INTENTIONALLY NOT
-# public — the OpenHost router must stamp X-OpenHost-Is-Owner on
-# it, otherwise the bridge can't identify the owner.
+# Lemmy is a public link-aggregator: anonymous visitors (and remote
+# ActivityPub servers) must be able to browse the whole instance —
+# the web UI, community/user/post pages, the federation surface
+# (Inbox / WebFinger / NodeInfo), and the read-only API — without a
+# 302 to the OpenHost /login.  So we make the ENTIRE app public
+# with "/".
+#
+# This is safe for SSO: the OpenHost router still verifies the
+# owner's zone_auth cookie on EVERY request (public or not) and
+# stamps X-OpenHost-Is-Owner: true when the owner is authenticated
+# (see compute_space subdomain_proxy.py — public_paths only
+# suppresses the login redirect on auth FAILURE; it never skips the
+# owner-auth attempt).  nginx's SSO bounce keys off that header, so
+# the owner is still auto-logged-in while anonymous visitors get a
+# clean read-only view.
+#
+# /_oidc/authorize is the one path we deliberately DON'T want to
+# behave "publicly": an anonymous hit there must be redirected to
+# /login (so the bridge only ever mints codes for the owner).  With
+# "/" public that redirect now comes from the OIDC bridge itself
+# (it 302s non-owners to /login), not the router — same end result.
+# We keep the explicit federation/OIDC entries below documented for
+# clarity even though "/" already covers them.
 public_paths = [
+    "/",
     "/_oidc/.well-known/openid-configuration",
     "/_oidc/jwks",
     "/_oidc/token",
