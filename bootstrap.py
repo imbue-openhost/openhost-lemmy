@@ -337,7 +337,20 @@ def _reconcile_provider(jwt_token: str, providers: list[dict]) -> None:
         "use_pkce",
         "enabled",
     )
-    drifted = [k for k in drift_keys if existing.get(k) != desired.get(k)]
+    # Only compare keys the API actually echoes back in the
+    # provider row.  Some fields we PUT (notably
+    # ``auto_approve_application``) are accepted but NOT returned in
+    # ``admin_oauth_providers`` on this Lemmy version, so a naive
+    # ``existing.get(k) != desired.get(k)`` would see them as
+    # perpetually "drifted" (None != True) and re-PUT on every boot.
+    # Treating a field that's absent from the response as "can't
+    # tell → assume in sync" stops that harmless-but-noisy churn
+    # while still catching genuine drift on the fields Lemmy does
+    # report (endpoints, issuer, scopes, enabled, …).
+    drifted = [
+        k for k in drift_keys
+        if k in existing and existing.get(k) != desired.get(k)
+    ]
     if not drifted:
         print(
             f"[bootstrap] OAuth provider {PROVIDER_DISPLAY!r} already up "
