@@ -8,10 +8,10 @@
   port: 8536
   tls_enabled: true
   setup: {
-    admin_username: "owner"
+    admin_username: "__PROVISION_ADMIN_USERNAME__"
     admin_password: "__ADMIN_PASSWORD__"
     site_name: "OpenHost Lemmy"
-    admin_email: "owner@__HOSTNAME__"
+    admin_email: "__PROVISION_ADMIN_USERNAME__@__HOSTNAME__"
   }
   federation: {
     concurrent_sends_per_instance: 1
