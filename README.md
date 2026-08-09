@@ -36,7 +36,7 @@ The end-to-end flow:
 
 1. **OpenHost router** stamps `X-OpenHost-Is-Owner: true` on every owner request after JWT-verifying the `zone_auth` cookie.
 2. **nginx** detects the combination `X-OpenHost-Is-Owner: true` + no Lemmy `jwt` cookie + `Accept: text/html` and rewrites the request to `/sso-bounce?prev=<original-path>`.
-3. **`sso_bounce.py`** serves a tiny HTML page with inline JS that mimics what lemmy-ui's `Sign in with OpenHost` button would do: writes `oauth_state` to `localStorage` (state, oauth_provider_id, redirect_uri, prev, expires_at, **username=openhost**) and `window.location.assign(...)` to the OIDC `/authorize` URL.
+3. **`sso_bounce.py`** serves a tiny HTML page with inline JS that mimics what lemmy-ui's `Sign in with OpenHost` button would do: writes `oauth_state` to `localStorage` (state, oauth_provider_id, redirect_uri, prev, expires_at, **username=`SSO_USERNAME`** — the owner's OpenHost username) and `window.location.assign(...)` to the OIDC `/authorize` URL.
 4. **`oidc_bridge.py`** sees `X-OpenHost-Is-Owner: true` on `/authorize`, generates an authorization code, redirects back to `https://lemmy.<zone>/oauth/callback?code=...&state=...`.
 5. **lemmy-ui's `OAuthCallback` component** reads `localStorage.oauth_state`, verifies the state matches, calls `POST /api/v4/oauth/authenticate` with the code + redirect_uri + username.
 6. **Lemmy backend** exchanges the code with the OIDC bridge **via loopback** (see "Loopback OIDC plumbing" below for why), verifies the JWKS signature, reads `sub` + `email` claims, creates the local SSO user (first time, named after `SSO_USERNAME` = the owner's username) or signs them in.  Returns a JWT that lemmy-ui stores in localStorage AND the `jwt` cookie.
