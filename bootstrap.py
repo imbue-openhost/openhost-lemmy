@@ -30,17 +30,23 @@ Runs on every container start; idempotent.  Tasks (in order):
 Configuration via env:
   * LEMMY_API_URL         — http://127.0.0.1:8536/api/v4
   * LEMMY_HOSTNAME        — public hostname (e.g. lemmy.<zone>)
-  * LEMMY_ADMIN_USERNAME  — provisioning admin username (default: owner)
-  * LEMMY_ADMIN_PASSWORD  — provisioning admin password from config.hjson
+  * LEMMY_ADMIN_USERNAME  — provisioning admin username created by the
+                            config.hjson setup block (default:
+                            "openhost-provisioner").  On an upgraded
+                            deploy the legacy "owner" admin is also
+                            tried (see LEGACY_ADMIN_USERNAMES).
+  * LEMMY_ADMIN_PASSWORD  — provisioning admin password (ephemeral,
+                            minted in-memory by start.sh each boot)
   * OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_PUBLIC_BASE
   * OIDC_LOOPBACK_BASE    — internal URL the Lemmy backend uses for
                             server-to-server OIDC calls.  Defaults to
                             http://127.0.0.1:7000 (matches start.sh).
-  * SSO_USERNAME          — Lemmy username the synthetic SSO user
-                            takes.  Defaults to "openhost"; must NOT
-                            collide with the provisioning admin
-                            (LEMMY_ADMIN_USERNAME) or any other
-                            pre-existing user.
+  * SSO_USERNAME          — Lemmy username the SSO user takes.  Set by
+                            start.sh to the zone owner's chosen
+                            username (OPENHOST_OWNER_USERNAME), falling
+                            back to "openhost".  Must NOT collide with
+                            the provisioning admin (start.sh guards
+                            this) or any other pre-existing user.
 """
 
 from __future__ import annotations
@@ -55,7 +61,15 @@ import urllib.request
 
 LEMMY_API = os.environ.get("LEMMY_API_URL", "http://127.0.0.1:8536/api/v4").rstrip("/")
 LEMMY_HOSTNAME = os.environ["LEMMY_HOSTNAME"]
-ADMIN_USERNAME = os.environ.get("LEMMY_ADMIN_USERNAME", "owner")
+# The provisioning-admin username created by the config.hjson setup
+# block.  Newer deploys use a reserved internal name
+# ("openhost-provisioner") so the owner's real username is free to
+# use for their SSO account.  Older deploys used "owner" as the
+# provisioning admin — we keep it in LEGACY_ADMIN_USERNAMES so an
+# in-place upgrade can still find and log in as the pre-existing
+# admin (the setup block never re-runs once an admin exists).
+ADMIN_USERNAME = os.environ.get("LEMMY_ADMIN_USERNAME", "openhost-provisioner")
+LEGACY_ADMIN_USERNAMES = ["owner"]
 ADMIN_PASSWORD = os.environ["LEMMY_ADMIN_PASSWORD"]
 # Connection string for the bundled Postgres.  Used only to re-stamp
 # the owner admin's bcrypt password each boot (see
@@ -119,31 +133,84 @@ def _wait_for_lemmy(max_seconds: int = 180) -> None:
     raise SystemExit("[bootstrap] timed out waiting for Lemmy /api/v4/site")
 
 
-def _reset_admin_password_in_db() -> None:
-    """Re-stamp the ``owner`` admin's password to the in-memory
-    ADMIN_PASSWORD by writing a fresh bcrypt hash directly into
-    Postgres.
+def _psql_reset_password(username: str, hashed: str) -> bool | None:
+    """Re-stamp ``username``'s bcrypt password in the DB.
+
+    Returns True if a row was updated, False if no such local user
+    exists, or None if the psql invocation itself failed (so the
+    caller can distinguish "user absent" from "couldn't tell").
+    Uses ``RETURNING`` so we can count affected rows precisely.
+    """
+    sql = (
+        "UPDATE local_user SET password_encrypted = :'hash' "
+        "WHERE person_id = (SELECT id FROM person "
+        "WHERE name = :'uname' AND local = true) "
+        "RETURNING id;"
+    )
+    cmd = [
+        PSQL_BIN,
+        DATABASE_URL,
+        "-v", "ON_ERROR_STOP=1",
+        "-v", f"hash={hashed}",
+        "-v", f"uname={username}",
+        "-tA",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, input=sql, capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"[bootstrap] WARN: admin password reset psql invocation failed: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if result.returncode != 0:
+        print(
+            f"[bootstrap] WARN: admin password reset returned "
+            f"rc={result.returncode} stderr={result.stderr.strip()!r}",
+            file=sys.stderr,
+        )
+        return None
+    # With -tA, psql still prints the command tag ("UPDATE 1" /
+    # "UPDATE 0") to stdout, so a non-empty stdout does NOT mean a
+    # row matched.  RETURNING id emits a bare numeric line PER
+    # updated row before that tag, so detect success by the presence
+    # of a line that is a plain integer (the returned local_user id).
+    for line in result.stdout.splitlines():
+        if line.strip().isdigit():
+            return True
+    return False
+
+
+def _reset_admin_password_in_db() -> str | None:
+    """Re-stamp the provisioning admin's password to the in-memory
+    ADMIN_PASSWORD (a fresh bcrypt hash written directly into
+    Postgres) and return the username whose row was actually reset.
 
     Why this exists: the admin (web-login) password is deliberately
     NOT persisted to disk (it would be readable by the file-browser
     app).  start.sh mints a new random one in-memory every boot.  On
     the very first boot Lemmy's ``config.hjson`` setup block creates
-    the ``owner`` user with that password, so login would work
+    the provisioning admin with that password, so login would work
     without this step — but on every SUBSEQUENT boot the setup block
     is a no-op (an admin already exists) and the DB still holds the
     PREVIOUS boot's password, so our fresh ADMIN_PASSWORD wouldn't
     match.  Re-stamping the hash here keeps the in-memory password
     and the DB in sync on every boot, at the cost of nothing on disk.
 
-    Idempotent and safe to run on first boot too (it just overwrites
-    the identical-purpose hash).  If anything about the reset fails
-    (missing bcrypt, psql, or DB URL) we log and continue: on first
-    boot the config-created password still works, and a hard failure
-    here shouldn't take down the whole app.
+    We try the configured ADMIN_USERNAME first, then any
+    LEGACY_ADMIN_USERNAMES — this lets a deploy that was originally
+    provisioned with the old "owner" admin keep working after an
+    upgrade that switches the provisioning-admin name.  Returns the
+    username that was reset (so ``_login`` uses the right one), or
+    None if we couldn't reset any (missing bcrypt/psql/DB URL, or no
+    matching row — e.g. a brand-new first boot where the config setup
+    block will create the admin with the config password anyway).
     """
     if not DATABASE_URL:
         print("[bootstrap] no LEMMY_DATABASE_URL; skipping admin password reset")
-        return
+        return None
     try:
         import bcrypt
     except ImportError:
@@ -152,68 +219,35 @@ def _reset_admin_password_in_db() -> None:
             "admin password in DB (first-boot config password still applies)",
             file=sys.stderr,
         )
-        return
+        return None
 
     hashed = bcrypt.hashpw(
         ADMIN_PASSWORD.encode("utf-8"),
         bcrypt.gensalt(rounds=BCRYPT_COST),
     ).decode("ascii")
 
-    # Update only the local_user row belonging to the ``owner``
-    # person.  We pass the hash + username as psql variables and
-    # reference them with the :'var' quoting form so they're never
-    # string-interpolated into the SQL text (defence in depth even
-    # though a bcrypt hash contains no quotes).
-    #
-    # IMPORTANT: psql only performs :'var' interpolation for SQL it
-    # reads from stdin or a -f file, NOT for a query passed via -c /
-    # --command.  So we feed the statement on stdin.  ON_ERROR_STOP
-    # makes a failed UPDATE return a non-zero exit code.
-    sql = (
-        "UPDATE local_user SET password_encrypted = :'hash' "
-        "WHERE person_id = (SELECT id FROM person "
-        "WHERE name = :'uname' AND local = true);"
+    for candidate in [ADMIN_USERNAME, *LEGACY_ADMIN_USERNAMES]:
+        updated = _psql_reset_password(candidate, hashed)
+        if updated:
+            print(f"[bootstrap] admin password re-stamped in DB for {candidate!r}")
+            return candidate
+        if updated is None:
+            # psql failed outright — stop trying, surface the warning.
+            return None
+        # updated is False: no such user, try the next candidate.
+    print(
+        "[bootstrap] no existing provisioning-admin row to reset "
+        "(first boot: config setup block will create it)"
     )
-    cmd = [
-        PSQL_BIN,
-        DATABASE_URL,
-        "-v", "ON_ERROR_STOP=1",
-        "-v", f"hash={hashed}",
-        "-v", f"uname={ADMIN_USERNAME}",
-        "-tA",
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            input=sql,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(
-            f"[bootstrap] WARN: admin password reset psql invocation failed: {exc}",
-            file=sys.stderr,
-        )
-        return
-    if result.returncode != 0:
-        print(
-            f"[bootstrap] WARN: admin password reset returned "
-            f"rc={result.returncode} stderr={result.stderr.strip()!r}",
-            file=sys.stderr,
-        )
-        return
-    # psql prints the UPDATE row-count tag like "UPDATE 1".
-    print(f"[bootstrap] admin password re-stamped in DB ({result.stdout.strip() or 'UPDATE'})")
+    return None
 
 
-def _login() -> str:
-    print(f"[bootstrap] logging in as {ADMIN_USERNAME!r}")
+def _login(username: str) -> str:
+    print(f"[bootstrap] logging in as {username!r}")
     status, payload = _request(
         "POST",
         "/account/auth/login",
-        {"username_or_email": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+        {"username_or_email": username, "password": ADMIN_PASSWORD},
     )
     if status != 200 or "jwt" not in payload:
         print(
@@ -527,12 +561,17 @@ def _watch_for_sso_user_and_promote(
 
 def main() -> int:
     _wait_for_lemmy()
-    # Re-stamp the owner's bcrypt password to match the ephemeral
-    # in-memory ADMIN_PASSWORD before we try to log in — on boots
-    # after the first, the DB otherwise still has the previous
-    # boot's password and the login below would 401.
-    _reset_admin_password_in_db()
-    jwt_token = _login()
+    # Re-stamp the provisioning admin's bcrypt password to match the
+    # ephemeral in-memory ADMIN_PASSWORD before we try to log in — on
+    # boots after the first, the DB otherwise still has the previous
+    # boot's password and the login below would 401.  The reset also
+    # resolves WHICH admin username actually exists (configured name,
+    # or a legacy "owner" from a pre-upgrade deploy) so we log in as
+    # the right one.  On a brand-new first boot no row exists yet
+    # (the config setup block creates it with ADMIN_PASSWORD), so we
+    # fall back to the configured ADMIN_USERNAME.
+    login_username = _reset_admin_password_in_db() or ADMIN_USERNAME
+    jwt_token = _login(login_username)
     site = _site(jwt_token)
 
     providers = site.get("admin_oauth_providers") or []

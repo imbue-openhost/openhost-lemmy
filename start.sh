@@ -150,6 +150,35 @@ gosu postgres "$PG_BIN/psql" -c "ALTER ROLE lemmy WITH PASSWORD '$PG_PASSWORD';"
 echo "[start.sh] Minting ephemeral Lemmy admin password (in-memory only)"
 ADMIN_PASSWORD="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)"
 
+# -----------------------------------------------------------------
+# Usernames: SSO (owner-facing) vs provisioning admin (internal)
+# -----------------------------------------------------------------
+#
+# SSO_USERNAME is the Lemmy username the OpenHost-SSO user takes on
+# first sign-in.  We prefer the zone OWNER's actual chosen username
+# (OPENHOST_OWNER_USERNAME, injected by OpenHost — the name they
+# picked at /setup) so the Lemmy account matches their OpenHost
+# identity, and fall back to "openhost" if it's unset/blank.  Both
+# bootstrap.py (admin promotion) and sso_bounce.py (localStorage
+# prefill) read SSO_USERNAME from the env.
+#
+# PROVISION_ADMIN_USERNAME is the Lemmy admin created by the config
+# setup block (used by bootstrap.py to log in + register the OAuth
+# provider).  It is a fixed, unlikely-to-be-chosen internal name so
+# it never collides with the owner's SSO username — Lemmy's OAuth
+# flow refuses to claim a pre-existing local user, so the SSO user
+# MUST be distinct from this provisioning admin.  Using a reserved
+# internal name (rather than "owner") frees the owner to use any
+# normal username — including "owner" — for their SSO account.
+PROVISION_ADMIN_USERNAME="openhost-provisioner"
+SSO_USERNAME="${SSO_USERNAME:-${OPENHOST_OWNER_USERNAME:-openhost}}"
+SSO_USERNAME="${SSO_USERNAME:-openhost}"
+if [[ "$SSO_USERNAME" == "$PROVISION_ADMIN_USERNAME" ]]; then
+    echo "[start.sh] owner username collides with reserved provisioner name; using 'openhost' for SSO"
+    SSO_USERNAME="openhost"
+fi
+echo "[start.sh] SSO user will be '$SSO_USERNAME' (owner username: '${OPENHOST_OWNER_USERNAME:-<unset>}')"
+
 if [[ ! -f "$OIDC_CLIENT_SECRET_FILE" ]]; then
     echo "[start.sh] Generating OIDC client secret"
     head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48 > "$OIDC_CLIENT_SECRET_FILE"
@@ -182,6 +211,7 @@ sed \
     -e "s|__POSTGRES_PASSWORD__|$PG_PASSWORD|g" \
     -e "s|__HOSTNAME__|$APP_HOST|g" \
     -e "s|__ADMIN_PASSWORD__|$ADMIN_PASSWORD|g" \
+    -e "s|__PROVISION_ADMIN_USERNAME__|$PROVISION_ADMIN_USERNAME|g" \
     /opt/openhost-lemmy/config.template.hjson > "$LEMMY_CONFIG"
 chown lemmy:lemmy "$LEMMY_CONFIG"
 chmod 0600 "$LEMMY_CONFIG"
@@ -298,11 +328,9 @@ OIDC_PUBLIC_BASE="https://$APP_HOST"
 # own public IP), so we keep them on loopback.  See bootstrap.py
 # `_provider_payload` for the full reasoning.
 OIDC_LOOPBACK_BASE="http://127.0.0.1:7000"
-# SSO_USERNAME is the Lemmy username the synthetic OpenHost-SSO
-# user takes on first sign-in.  Both bootstrap.py (admin
-# promotion) and sso_bounce.py (localStorage prefill) read this
-# env var — change it in one place and both pick it up.
-SSO_USERNAME="${SSO_USERNAME:-openhost}"
+# SSO_USERNAME + PROVISION_ADMIN_USERNAME are defined earlier (in
+# the admin-password section) so the config render can use the
+# provisioning-admin name.
 export OIDC_PUBLIC_BASE
 export OIDC_LOOPBACK_BASE
 export OIDC_CLIENT_ID
@@ -349,7 +377,7 @@ NGINX_PID=$!
 (
     LEMMY_HOSTNAME="$APP_HOST" \
     LEMMY_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
-    LEMMY_ADMIN_USERNAME="owner" \
+    LEMMY_ADMIN_USERNAME="$PROVISION_ADMIN_USERNAME" \
     LEMMY_DATABASE_URL="postgres://lemmy:$PG_PASSWORD@localhost:5432/lemmy" \
     OIDC_CLIENT_ID="$OIDC_CLIENT_ID" \
     OIDC_CLIENT_SECRET="$OIDC_CLIENT_SECRET" \
