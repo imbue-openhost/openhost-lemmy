@@ -172,9 +172,15 @@ def _psql_reset_password(username: str, hashed: str) -> bool | None:
             file=sys.stderr,
         )
         return None
-    # RETURNING id emits one line per updated row; empty stdout means
-    # no matching local user existed.
-    return bool(result.stdout.strip())
+    # With -tA, psql still prints the command tag ("UPDATE 1" /
+    # "UPDATE 0") to stdout, so a non-empty stdout does NOT mean a
+    # row matched.  RETURNING id emits a bare numeric line PER
+    # updated row before that tag, so detect success by the presence
+    # of a line that is a plain integer (the returned local_user id).
+    for line in result.stdout.splitlines():
+        if line.strip().isdigit():
+            return True
+    return False
 
 
 def _reset_admin_password_in_db() -> str | None:
