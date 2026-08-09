@@ -37,10 +37,26 @@ APP_HOST="${APP_NAME}.${ZONE_DOMAIN}"
 PG_DATA="$PERSIST/postgres"
 PG_LOG_DIR="$PERSIST/log"
 PG_LOG="$PG_LOG_DIR/postgres.log"
-LEMMY_CONFIG="$PERSIST/config.hjson"
-ADMIN_PASSWORD_FILE="$PERSIST/admin-password.txt"
+# Lemmy's rendered config carries the DB password AND the admin
+# password in cleartext, so it must NOT live under $PERSIST (which
+# file-browser's access_all_data mounts can read).  We render it to
+# a container-local, non-bind-mounted path under /run instead.  The
+# config is re-rendered from the template on every boot, so nothing
+# is lost by not persisting it.  Older deployments wrote it to
+# $PERSIST/config.hjson — scrub that legacy copy.
+LEMMY_RUNTIME_DIR="/run/lemmy"
+LEMMY_CONFIG="$LEMMY_RUNTIME_DIR/config.hjson"
+rm -f "$PERSIST/config.hjson" 2>/dev/null || true
 PG_PASSWORD_FILE="$PERSIST/postgres-password.txt"
 OIDC_CLIENT_SECRET_FILE="$PERSIST/oidc-client-secret.txt"
+# Legacy artifact from earlier builds: the Lemmy admin (web-login)
+# password used to be persisted here in plaintext, which the
+# file-browser app (access_all_data=true) could read — a real
+# credential leak because it's a usable /login password.  We no
+# longer persist it (see below); scrub any copy left by an older
+# deployment.
+LEGACY_ADMIN_PASSWORD_FILE="$PERSIST/admin-password.txt"
+rm -f "$LEGACY_ADMIN_PASSWORD_FILE" 2>/dev/null || true
 
 # Lay out persistent dirs with correct ownership.  Postgres
 # specifically needs its data dir + log dir owned by the postgres
@@ -114,12 +130,25 @@ gosu postgres "$PG_BIN/psql" -c "ALTER ROLE lemmy WITH PASSWORD '$PG_PASSWORD';"
 # Admin password + OIDC client secret
 # -----------------------------------------------------------------
 
-if [[ ! -f "$ADMIN_PASSWORD_FILE" ]]; then
-    echo "[start.sh] Generating Lemmy admin password"
-    head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32 > "$ADMIN_PASSWORD_FILE"
-    chmod 0600 "$ADMIN_PASSWORD_FILE"
-fi
-ADMIN_PASSWORD="$(cat "$ADMIN_PASSWORD_FILE")"
+# Lemmy admin (web-login) password for the `owner` provisioning
+# account.  This is a usable /login credential, so we NEVER write
+# it to disk (file-browser could read it).  Instead we mint a fresh
+# random one in-memory on every boot and have bootstrap.py re-stamp
+# it into Lemmy's `local_user.password_encrypted` (bcrypt) before
+# it logs in.  Effect: the owner password silently rotates every
+# container start and nothing usable ever lands in $PERSIST.
+#
+# The owner account is a break-glass admin anyway — normal use is
+# the SSO-minted `openhost` admin.  This value lives ONLY in this
+# start.sh process's memory (it is deliberately not `export`ed, so
+# it never appears in child-process environments or `podman exec …
+# printenv`), which is why bootstrap.py receives it explicitly via
+# the env-prefix on its invocation below.  There is therefore no
+# stored owner password to recover — day-to-day access is via SSO.
+# To log in as `owner` directly, set a password yourself in the DB
+# (see README "How auth works").
+echo "[start.sh] Minting ephemeral Lemmy admin password (in-memory only)"
+ADMIN_PASSWORD="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 40)"
 
 if [[ ! -f "$OIDC_CLIENT_SECRET_FILE" ]]; then
     echo "[start.sh] Generating OIDC client secret"
@@ -143,7 +172,12 @@ for d in "$PERSIST"/oidc; do
 done
 
 # Always re-render so config-template changes after upgrades take
-# effect.  Lemmy reads this on startup.
+# effect.  Lemmy reads this on startup.  Rendered to /run (tmpfs-ish
+# container-local storage), never to $PERSIST, so the embedded DB +
+# admin passwords are never exposed to file-browser.
+mkdir -p "$LEMMY_RUNTIME_DIR"
+chmod 0710 "$LEMMY_RUNTIME_DIR"
+chown lemmy:lemmy "$LEMMY_RUNTIME_DIR"
 sed \
     -e "s|__POSTGRES_PASSWORD__|$PG_PASSWORD|g" \
     -e "s|__HOSTNAME__|$APP_HOST|g" \
@@ -315,6 +349,8 @@ NGINX_PID=$!
 (
     LEMMY_HOSTNAME="$APP_HOST" \
     LEMMY_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+    LEMMY_ADMIN_USERNAME="owner" \
+    LEMMY_DATABASE_URL="postgres://lemmy:$PG_PASSWORD@localhost:5432/lemmy" \
     OIDC_CLIENT_ID="$OIDC_CLIENT_ID" \
     OIDC_CLIENT_SECRET="$OIDC_CLIENT_SECRET" \
     OIDC_PUBLIC_BASE="$OIDC_PUBLIC_BASE" \

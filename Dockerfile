@@ -46,7 +46,8 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 
 # System deps:
-#   * postgresql-15: bundled DB, runs as the `postgres` user.
+#   * postgresql-16 (installed from pgdg below): bundled DB, runs
+#     as the `postgres` user.
 #   * nginx: front-door router (routes /_oidc, /api/v3, /pictrs,
 #            /sso-bounce, /).
 #   * python3 + venv + pip: OIDC bridge (Starlette + python-jose).
@@ -67,6 +68,7 @@ RUN apt-get update -qq \
         python3-starlette \
         python3-jwt \
         python3-cryptography \
+        python3-bcrypt \
         python3-uvicorn \
         curl \
         tini \

@@ -4,9 +4,11 @@
 Runs on every container start; idempotent.  Tasks (in order):
 
   1. Wait for Lemmy to come up.
-  2. Log in as the provisioning admin (``owner``) using the password
-     persisted in ``admin-password.txt`` so we have a JWT for the
-     subsequent admin-only API calls.
+  2. Re-stamp the provisioning admin (``owner``) password in the DB to
+     the ephemeral in-memory ``LEMMY_ADMIN_PASSWORD`` (start.sh mints a
+     fresh one each boot and never writes it to disk), then log in as
+     ``owner`` with it so we have a JWT for the subsequent admin-only
+     API calls.  See ``_reset_admin_password_in_db`` for why.
   3. Register (or, on subsequent boots, *reconcile*) the OIDC
      ``oauth_provider`` row.  We always re-PUT the endpoints because
      the design changed mid-life: token_endpoint and userinfo_endpoint
@@ -45,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -54,6 +57,17 @@ LEMMY_API = os.environ.get("LEMMY_API_URL", "http://127.0.0.1:8536/api/v4").rstr
 LEMMY_HOSTNAME = os.environ["LEMMY_HOSTNAME"]
 ADMIN_USERNAME = os.environ.get("LEMMY_ADMIN_USERNAME", "owner")
 ADMIN_PASSWORD = os.environ["LEMMY_ADMIN_PASSWORD"]
+# Connection string for the bundled Postgres.  Used only to re-stamp
+# the owner admin's bcrypt password each boot (see
+# _reset_admin_password_in_db).  Optional: if unset we skip the
+# reset and assume the config.hjson setup block already created the
+# owner with ADMIN_PASSWORD (true on first boot).
+DATABASE_URL = os.environ.get("LEMMY_DATABASE_URL", "")
+# Lemmy hashes local-user passwords with bcrypt cost 12 (the
+# "$2b$12$" prefix).  We must match that cost so the hash we write
+# verifies against Lemmy's password checker.
+BCRYPT_COST = 12
+PSQL_BIN = os.environ.get("PSQL_BIN", "/usr/lib/postgresql/16/bin/psql")
 OIDC_CLIENT_ID = os.environ["OIDC_CLIENT_ID"]
 OIDC_CLIENT_SECRET = os.environ["OIDC_CLIENT_SECRET"]
 OIDC_PUBLIC_BASE = os.environ["OIDC_PUBLIC_BASE"].rstrip("/")
@@ -103,6 +117,95 @@ def _wait_for_lemmy(max_seconds: int = 180) -> None:
             pass
         time.sleep(2)
     raise SystemExit("[bootstrap] timed out waiting for Lemmy /api/v4/site")
+
+
+def _reset_admin_password_in_db() -> None:
+    """Re-stamp the ``owner`` admin's password to the in-memory
+    ADMIN_PASSWORD by writing a fresh bcrypt hash directly into
+    Postgres.
+
+    Why this exists: the admin (web-login) password is deliberately
+    NOT persisted to disk (it would be readable by the file-browser
+    app).  start.sh mints a new random one in-memory every boot.  On
+    the very first boot Lemmy's ``config.hjson`` setup block creates
+    the ``owner`` user with that password, so login would work
+    without this step — but on every SUBSEQUENT boot the setup block
+    is a no-op (an admin already exists) and the DB still holds the
+    PREVIOUS boot's password, so our fresh ADMIN_PASSWORD wouldn't
+    match.  Re-stamping the hash here keeps the in-memory password
+    and the DB in sync on every boot, at the cost of nothing on disk.
+
+    Idempotent and safe to run on first boot too (it just overwrites
+    the identical-purpose hash).  If anything about the reset fails
+    (missing bcrypt, psql, or DB URL) we log and continue: on first
+    boot the config-created password still works, and a hard failure
+    here shouldn't take down the whole app.
+    """
+    if not DATABASE_URL:
+        print("[bootstrap] no LEMMY_DATABASE_URL; skipping admin password reset")
+        return
+    try:
+        import bcrypt
+    except ImportError:
+        print(
+            "[bootstrap] WARN: python3-bcrypt not available; cannot reset "
+            "admin password in DB (first-boot config password still applies)",
+            file=sys.stderr,
+        )
+        return
+
+    hashed = bcrypt.hashpw(
+        ADMIN_PASSWORD.encode("utf-8"),
+        bcrypt.gensalt(rounds=BCRYPT_COST),
+    ).decode("ascii")
+
+    # Update only the local_user row belonging to the ``owner``
+    # person.  We pass the hash + username as psql variables and
+    # reference them with the :'var' quoting form so they're never
+    # string-interpolated into the SQL text (defence in depth even
+    # though a bcrypt hash contains no quotes).
+    #
+    # IMPORTANT: psql only performs :'var' interpolation for SQL it
+    # reads from stdin or a -f file, NOT for a query passed via -c /
+    # --command.  So we feed the statement on stdin.  ON_ERROR_STOP
+    # makes a failed UPDATE return a non-zero exit code.
+    sql = (
+        "UPDATE local_user SET password_encrypted = :'hash' "
+        "WHERE person_id = (SELECT id FROM person "
+        "WHERE name = :'uname' AND local = true);"
+    )
+    cmd = [
+        PSQL_BIN,
+        DATABASE_URL,
+        "-v", "ON_ERROR_STOP=1",
+        "-v", f"hash={hashed}",
+        "-v", f"uname={ADMIN_USERNAME}",
+        "-tA",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=sql,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"[bootstrap] WARN: admin password reset psql invocation failed: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if result.returncode != 0:
+        print(
+            f"[bootstrap] WARN: admin password reset returned "
+            f"rc={result.returncode} stderr={result.stderr.strip()!r}",
+            file=sys.stderr,
+        )
+        return
+    # psql prints the UPDATE row-count tag like "UPDATE 1".
+    print(f"[bootstrap] admin password re-stamped in DB ({result.stdout.strip() or 'UPDATE'})")
 
 
 def _login() -> str:
@@ -234,7 +337,20 @@ def _reconcile_provider(jwt_token: str, providers: list[dict]) -> None:
         "use_pkce",
         "enabled",
     )
-    drifted = [k for k in drift_keys if existing.get(k) != desired.get(k)]
+    # Only compare keys the API actually echoes back in the
+    # provider row.  Some fields we PUT (notably
+    # ``auto_approve_application``) are accepted but NOT returned in
+    # ``admin_oauth_providers`` on this Lemmy version, so a naive
+    # ``existing.get(k) != desired.get(k)`` would see them as
+    # perpetually "drifted" (None != True) and re-PUT on every boot.
+    # Treating a field that's absent from the response as "can't
+    # tell → assume in sync" stops that harmless-but-noisy churn
+    # while still catching genuine drift on the fields Lemmy does
+    # report (endpoints, issuer, scopes, enabled, …).
+    drifted = [
+        k for k in drift_keys
+        if k in existing and existing.get(k) != desired.get(k)
+    ]
     if not drifted:
         print(
             f"[bootstrap] OAuth provider {PROVIDER_DISPLAY!r} already up "
@@ -411,6 +527,11 @@ def _watch_for_sso_user_and_promote(
 
 def main() -> int:
     _wait_for_lemmy()
+    # Re-stamp the owner's bcrypt password to match the ephemeral
+    # in-memory ADMIN_PASSWORD before we try to log in — on boots
+    # after the first, the DB otherwise still has the previous
+    # boot's password and the login below would 401.
+    _reset_admin_password_in_db()
     jwt_token = _login()
     site = _site(jwt_token)
 

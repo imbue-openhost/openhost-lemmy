@@ -9,23 +9,39 @@ image = "Dockerfile"
 # nginx fronts everything on :8080.  Internal services:
 #   * Lemmy backend (Rust) on 127.0.0.1:8536
 #   * lemmy-ui (Node SSR) on 127.0.0.1:1234
-#   * pict-rs (image hosting) on 127.0.0.1:8338
-#   * Postgres on 127.0.0.1:5432 (loopback only)
+#   * Postgres 16 on 127.0.0.1:5432 (loopback only)
 #   * OIDC bridge (Python) on 127.0.0.1:7000
+#   * SSO bouncer (Python) on 127.0.0.1:7100
+# (pict-rs / image hosting is NOT bundled — see README.)
 port = 8080
 
 [routing]
 health_check = "/api/v3/site"
-# Federation requires anonymous access to the bulk of Lemmy's
-# surface — remote ActivityPub servers don't carry zone_auth
-# cookies and must reach our Inbox / WebFinger / NodeInfo / API
-# without a 302 to /login.  We also keep /_oidc/{discovery,jwks,
-# token,userinfo} public so Lemmy's backend can fetch them
-# server-side (it runs in the same container but accesses these
-# via the public URL).  /_oidc/authorize is INTENTIONALLY NOT
-# public — the OpenHost router must stamp X-OpenHost-Is-Owner on
-# it, otherwise the bridge can't identify the owner.
+# Lemmy is a public link-aggregator: anonymous visitors (and remote
+# ActivityPub servers) must be able to browse the whole instance —
+# the web UI, community/user/post pages, the federation surface
+# (Inbox / WebFinger / NodeInfo), and the read-only API — without a
+# 302 to the OpenHost /login.  So we make the ENTIRE app public
+# with "/".
+#
+# This is safe for SSO: the OpenHost router still verifies the
+# owner's zone_auth cookie on EVERY request (public or not) and
+# stamps X-OpenHost-Is-Owner: true when the owner is authenticated
+# (see compute_space subdomain_proxy.py — public_paths only
+# suppresses the login redirect on auth FAILURE; it never skips the
+# owner-auth attempt).  nginx's SSO bounce keys off that header, so
+# the owner is still auto-logged-in while anonymous visitors get a
+# clean read-only view.
+#
+# /_oidc/authorize is the one path we deliberately DON'T want to
+# behave "publicly": an anonymous hit there must be redirected to
+# /login (so the bridge only ever mints codes for the owner).  With
+# "/" public that redirect now comes from the OIDC bridge itself
+# (it 302s non-owners to /login), not the router — same end result.
+# We keep the explicit federation/OIDC entries below documented for
+# clarity even though "/" already covers them.
 public_paths = [
+    "/",
     "/_oidc/.well-known/openid-configuration",
     "/_oidc/jwks",
     "/_oidc/token",
@@ -49,23 +65,27 @@ public_paths = [
 ]
 
 [resources]
-# Postgres + Lemmy backend (Rust) + lemmy-ui (Node SSR) +
-# pict-rs.  2 GiB is comfortable for a single-user / small
+# Postgres 16 + Lemmy backend (Rust) + lemmy-ui (Node SSR) +
+# OIDC bridge.  2 GiB is comfortable for a single-user / small
 # instance; bump for larger.
 memory_mb = 2048
 cpu_millicores = 1500
 
 [data]
 # Persistent state under /data/app_data/lemmy/:
-#   * postgres/         — the Postgres data dir
-#   * pictrs/           — pict-rs's content-addressed image store
-#   * config.hjson      — Lemmy's main config (rendered from a
-#                         template on first boot; references the
-#                         persisted JWT secret + admin password)
-#   * admin-password.txt — initial admin password used by the
-#                         OIDC-provider-registration step on first
-#                         boot.  Operator can also use this to log
-#                         in directly if SSO ever breaks.
-#   * oidc/             — OIDC bridge's signing key + bridge config
+#   * postgres/               — the Postgres data dir
+#   * postgres-password.txt   — the DB role password (not a user
+#                               credential; DB binds loopback-only)
+#   * oidc-client-secret.txt  — OIDC client secret shared between
+#                               Lemmy and the in-container bridge
+#                               (not a user credential)
+#   * oidc/signing-key.pem    — OIDC bridge's RSA signing key
+#
+# Deliberately NOT under app_data (so file-browser can't read a
+# usable credential): the Lemmy admin (web-login) password — minted
+# in-memory each boot and re-stamped into the DB by bootstrap.py —
+# and the rendered config.hjson (which embeds cleartext passwords),
+# which lives at /run/lemmy/config.hjson (container-local, re-rendered
+# every boot).  See start.sh + README "Persistent files".
 app_data = true
 app_temp_data = true

@@ -17,7 +17,7 @@ Single container running:
 | nginx | 8080 (public) | request router |
 | lemmy_server | 8536 (loopback) | Rust ActivityPub backend |
 | lemmy-ui | 1234 (loopback) | Node SSR frontend |
-| Postgres 15 | 5432 (loopback) | Lemmy's metadata DB |
+| Postgres 16 | 5432 (loopback) | Lemmy's metadata DB |
 | oidc_bridge | 7000 (loopback) | OIDC provider for SSO |
 | sso_bounce | 7100 (loopback) | OAuth start page (primes localStorage + 302 to /authorize) |
 
@@ -27,7 +27,7 @@ Supervision: bash + `wait -n` (same pattern as `openhost-sftp` / `openhost-synct
 
 Two Lemmy users share this single-tenant deployment:
 
-- **`owner`** — the bootstrap admin created by Lemmy's setup flow.  Has a password (in `admin-password.txt`) for break-glass access, but normally untouched.  Owns the OAuth provider registration + the registration-mode toggle that the SSO flow depends on.
+- **`owner`** — the bootstrap admin created by Lemmy's setup flow.  Its web-login password is minted fresh in-memory on every container boot and re-stamped into Lemmy's `local_user.password_encrypted` (bcrypt) by `bootstrap.py` — it is **never written to disk**, so the file-browser app can't read it.  Normally untouched; it owns the OAuth-provider registration + the registration-mode toggle the SSO flow depends on.  Because the password lives only in the boot's `start.sh` process memory (it is not exported into the container's environment), there's no stored value to recover — day-to-day access is always via SSO (as the `openhost` admin).  If you ever truly need to log in as `owner` directly, set a known one yourself:  `podman exec -it openhost-lemmy /usr/lib/postgresql/16/bin/psql "$LEMMY_DATABASE_URL"` and `UPDATE local_user SET password_encrypted = crypt('yourpw', gen_salt('bf', 12)) …` (requires the `pgcrypto` extension), or just keep using SSO.
 - **`openhost`** — the dedicated OpenHost-SSO user, created lazily the first time the zone owner signs in via SSO.  Promoted to admin by `bootstrap.py` once it appears.  This is the user the owner ends up signed-in as for normal day-to-day use.
 
 The two are separate because Lemmy's OAuth flow refuses to claim a pre-existing local user as an OIDC identity — so the SSO has to mint its own user, and the bouncer pre-fills `username = "openhost"` to avoid colliding with the admin.
@@ -83,16 +83,34 @@ Lemmy's OAuth user-creation path goes through the same code as a self-registrati
 ### Persistent files (under `$OPENHOST_APP_DATA_DIR/`)
 
 ```
-postgres/                 — Postgres 15 data dir
+postgres/                 — Postgres 16 data dir
 postgres-password.txt     — auto-generated DB role password (mode 0600)
-admin-password.txt        — auto-generated Lemmy admin password (mode 0600)
 oidc-client-secret.txt    — auto-generated OIDC client secret (mode 0600)
-config.hjson              — rendered Lemmy config (re-rendered every boot)
 oidc/signing-key.pem      — OIDC bridge's RSA private key (persists so
                             already-issued ID tokens stay verifiable)
 ```
 
-The admin password is the fallback if SSO ever breaks: log in directly at `https://lemmy.<zone>/login` with username `owner` and the password from `admin-password.txt`. To rotate, `rm` the file and restart the container — start.sh regenerates and re-pushes the new password to Lemmy's DB on next boot.
+Two things deliberately do **not** live under `$OPENHOST_APP_DATA_DIR`:
+
+- **The Lemmy admin (web-login) password.** It's minted in-memory each
+  boot and re-stamped into the DB by `bootstrap.py`; nothing usable lands
+  on disk.  Earlier builds persisted it as `admin-password.txt` — that was
+  a credential leak (file-browser's `access_all_data` mount could read a
+  live `/login` password).  `start.sh` scrubs any legacy copy on boot.
+- **The rendered `config.hjson`** (which embeds the DB + admin passwords in
+  cleartext).  It's written to a container-local `/run/lemmy/config.hjson`
+  (not a bind mount) and re-rendered every boot, so it never appears under
+  `app_data` either.  `start.sh` scrubs any legacy `$PERSIST/config.hjson`.
+
+`postgres-password.txt` and `oidc-client-secret.txt` remain on disk: neither
+is a user password.  Postgres binds loopback-only, so the DB password is only
+useful to something already inside the container (same trust boundary as
+file-browser reading it), and the OIDC client secret only lets a party that
+already controls this container mint tokens for this one app.
+
+To rotate the DB password, `rm postgres-password.txt` and restart — start.sh
+regenerates it and `ALTER ROLE`s the new one. The admin password rotates on
+its own every boot.
 
 ## Federation
 
@@ -104,20 +122,26 @@ Lemmy federates over ActivityPub. Other instances need to reach:
 - `/u/<user>`, `/c/<community>`, `/post/<id>`, `/comment/<id>` — actor + object profiles
 - `/api/v3/*` (read-only endpoints) — federation peers occasionally fetch
 
-All of these are listed in the OpenHost manifest's `routing.public_paths` so the OpenHost router doesn't 302 them to `/login` when accessed without a `zone_auth` cookie.
+The manifest's `routing.public_paths` is set to `"/"` (the whole app), so the OpenHost router never 302s an anonymous visitor to `/login` — whether they're a federation peer hitting the Inbox or a human browsing the web UI.
+
+## Anonymous viewing
+
+Lemmy is a public link-aggregator, so anonymous (non-owner) visitors can browse the whole instance read-only: the web UI, communities, user profiles, posts, and comments. This works because `routing.public_paths = ["/"]` tells the OpenHost router to let unauthenticated traffic through.
+
+This does not weaken SSO. The OpenHost router still verifies the owner's `zone_auth` cookie on **every** request (public paths only suppress the login-redirect on auth *failure*; they never skip the owner-auth attempt), so it still stamps `X-OpenHost-Is-Owner: true` when the owner is signed in. nginx's SSO bounce keys off that header, so the owner is still auto-logged-in while anonymous visitors get the read-only view. Lemmy's own permission model still governs who can post/vote/moderate.
 
 ## Limitations
 
 - **No pict-rs.** Image hosting (avatars, post thumbnails, federated remote media) is not bundled. Lemmy works without it (image features just become no-ops); add a `[[ports]]`-published pict-rs alongside if you want it.
 - **Single owner.** This deployment is single-tenant by design. The OIDC bridge always claims `sub: owner@<zone>`, so every SSO sign-in lands as the same `openhost` user. Federated remote users (signing up from other instances and following your communities) are handled normally; this only constrains who-can-be-an-admin-on-this-instance.
-- **No outbound email.** Account confirmations and password-reset are disabled (you can't lose your password — it's in the credentials file).
+- **No outbound email.** Account confirmations and password-reset are disabled. This is fine for the single-tenant owner because normal access is via OpenHost SSO (no password needed); the break-glass `owner` password is minted in-memory each boot rather than stored, so there's nothing to "reset".
 - **PKCE supported** on the OIDC flow (per Lemmy 0.19.10+'s requirement) but the `state` validation is left to lemmy-ui's localStorage check. If lemmy-ui's `oauth_state` schema changes, the bouncer's inline JS would need updating to match.
-- **Bundled Postgres**, not an external one. Postgres 15 from Debian Bookworm's apt repo runs in the same container; data lives under `$OPENHOST_APP_DATA_DIR/postgres/`. Backups via OpenHost's `openhost-backup` app capture this directory verbatim.
+- **Bundled Postgres**, not an external one. Postgres 16 (from the pgdg apt repo — Lemmy 1.0-alpha's migrations use Postgres-16-only SQL) runs in the same container; data lives under `$OPENHOST_APP_DATA_DIR/postgres/`. Backups via OpenHost's `openhost-backup` app capture this directory verbatim.
 
 ## How this is built
 
 - **Base**: `debian:bookworm-slim`. Matches the upstream `dessalines/lemmy` build environment so libpq and glibc agree.
-- **lemmy_server binary**: copied from `dessalines/lemmy:0.19.13` via `COPY --from=...`.
-- **lemmy-ui**: copied from `dessalines/lemmy-ui:0.19.13` (includes the bundled Node binary).
-- **Postgres**: `postgresql-15` from apt.
+- **lemmy_server binary**: copied from `dessalines/lemmy:1.0.0-alpha.18` via `COPY --from=...` (OAuth/OIDC — required for SSO — landed only in the 1.0 series; 0.19.x has no `oauth_provider` API).
+- **lemmy-ui**: copied from `dessalines/lemmy-ui:1.0.0-alpha.18` (JS bundle only; Node itself comes from NodeSource apt because the upstream image is musl/Alpine).
+- **Postgres**: `postgresql-16` from the pgdg apt repo.
 - **Python services** (oidc_bridge, sso_bounce, bootstrap): `starlette` + `python3-jwt` + `python3-cryptography` + `uvicorn`, all from apt — no `pip install` step in the build.
