@@ -1,7 +1,7 @@
 [app]
 name = "lemmy"
 version = "0.1.0"
-description = "Lemmy federated link-aggregator (fediverse Reddit) packaged for OpenHost, with an OIDC bridge so the zone owner is auto-logged-in via OpenHost SSO without ever seeing Lemmy's native login page."
+description = "Lemmy federated link-aggregator (fediverse Reddit) packaged for Cloud in a Bottle, with an OIDC bridge so the zone owner is auto-logged-in via Cloud in a Bottle SSO without ever seeing Lemmy's native login page."
 authors = ["Andrew Laack <andrew@laack.co>"]
 
 [runtime.container]
